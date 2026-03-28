@@ -1,111 +1,128 @@
--- 1. Trigger (Validation): PreventOverbooking
--- Runs BEFORE INSERT on the Transactions table and throws an error if all spots are full.
-CREATE OR REPLACE TRIGGER PreventOverbooking
-BEFORE INSERT ON Transactions
-FOR EACH ROW
-DECLARE
-    v_available_spots NUMBER;
+CREATE OR REPLACE FUNCTION FUNC_FIND_AVAILABLE_SLOT (
+    p_vehicle_type IN VARCHAR2
+) RETURN VARCHAR2 AS
+    v_slot_id VARCHAR2(20);
 BEGIN
-    SELECT COUNT(*) INTO v_available_spots
-    FROM ParkingSpots
-    WHERE IsOccupied = 'N';
+    SELECT slot_id INTO v_slot_id
+    FROM ParkingSlot
+    WHERE is_occupied = 'N' AND slot_type = p_vehicle_type
+    AND ROWNUM = 1;
 
-    IF v_available_spots = 0 THEN
-        RAISE_APPLICATION_ERROR(-20001, 'Parking lot is full. No spots available.');
-    END IF;
-END;
-/
-
--- 2. Stored Procedure (Entry): AssignParkingSpot
--- Takes a license plate, finds an empty spot, marks it as occupied, and logs the entry time.
-CREATE OR REPLACE PROCEDURE AssignParkingSpot (
-    p_LicensePlate IN VARCHAR2,
-    p_SpotType IN VARCHAR2 DEFAULT 'Regular',
-    p_TransactionID OUT NUMBER,
-    p_SpotID OUT NUMBER
-) AS
-    v_spot_id NUMBER;
-BEGIN
-    -- Find an empty spot
-    SELECT SpotID INTO v_spot_id
-    FROM ParkingSpots
-    WHERE IsOccupied = 'N'
-      AND SpotType = p_SpotType
-      AND ROWNUM = 1;
-
-    -- Mark spot as occupied
-    UPDATE ParkingSpots
-    SET IsOccupied = 'Y'
-    WHERE SpotID = v_spot_id;
-
-    -- Insert into Transactions. The trigger 'PreventOverbooking' will run before this insert.
-    -- (In a real scenario, the trigger might fire here, but since we just updated IsOccupied to 'Y',
-    -- if it was the last spot, the trigger will see 0 available. So we must ensure the trigger checks correctly
-    -- or we accept this flow for the rubric requirement).
-    -- To perfectly satisfy the requirement where the trigger prevents insert, the trigger is on the Transactions table.
-
-    INSERT INTO Transactions (LicensePlate, SpotID, EntryTime)
-    VALUES (p_LicensePlate, v_spot_id, CURRENT_TIMESTAMP)
-    RETURNING TransactionID INTO p_TransactionID;
-
-    p_SpotID := v_spot_id;
-
+    RETURN v_slot_id;
 EXCEPTION
     WHEN NO_DATA_FOUND THEN
-        RAISE_APPLICATION_ERROR(-20002, 'No available spots for the requested vehicle type.');
+        RETURN NULL;
 END;
 /
 
--- 3. Function (Exit): CalculateFee
--- Takes a TransactionID, calculates the time spent, multiplies it by a rate, updates the TotalFee, and returns it.
-CREATE OR REPLACE FUNCTION CalculateFee (
-    p_TransactionID IN NUMBER
+CREATE OR REPLACE FUNCTION FUNC_CALCULATE_FEE (
+    p_ticket_id IN VARCHAR2
 ) RETURN NUMBER AS
-    v_entry_time TIMESTAMP;
-    v_exit_time TIMESTAMP;
-    v_spot_id NUMBER;
+    v_start_time TIMESTAMP;
+    v_end_time TIMESTAMP;
+    v_vehicle_type VARCHAR2(20);
     v_hours NUMBER;
+    v_rate NUMBER;
     v_fee NUMBER;
-    v_hourly_rate NUMBER := 5.00; -- $5 per hour
 BEGIN
-    v_exit_time := CURRENT_TIMESTAMP;
+    v_end_time := CURRENT_TIMESTAMP;
 
-    -- Retrieve EntryTime and SpotID for the transaction
-    SELECT EntryTime, SpotID INTO v_entry_time, v_spot_id
-    FROM Transactions
-    WHERE TransactionID = p_TransactionID AND ExitTime IS NULL;
+    -- Look up the ticket and vehicle details
+    SELECT t.start_time, v.vehicle_type
+    INTO v_start_time, v_vehicle_type
+    FROM TICKET t
+    JOIN VEHICLE v ON t.vehicle_id = v.vehicle_id
+    WHERE t.ticket_id = p_ticket_id AND t.status = 'ACTIVE';
 
-    -- Calculate time spent in hours (Oracle INTERVAL calculation)
+    -- Calculate difference in hours
     SELECT
-        EXTRACT(DAY FROM (v_exit_time - v_entry_time)) * 24 +
-        EXTRACT(HOUR FROM (v_exit_time - v_entry_time)) +
-        EXTRACT(MINUTE FROM (v_exit_time - v_entry_time)) / 60
+        EXTRACT(DAY FROM (v_end_time - v_start_time)) * 24 +
+        EXTRACT(HOUR FROM (v_end_time - v_start_time)) +
+        EXTRACT(MINUTE FROM (v_end_time - v_start_time)) / 60
     INTO v_hours
     FROM DUAL;
 
-    -- Charge for at least 1 hour
+    -- Minimum charge of 1 hour
     IF v_hours < 1 THEN
         v_hours := 1;
     END IF;
 
-    -- Calculate total fee
-    v_fee := ROUND(v_hours * v_hourly_rate, 2);
+    -- Fetch dynamic pricing rate from table
+    BEGIN
+        SELECT hourly_rate INTO v_rate FROM PricingRule WHERE vehicle_type = v_vehicle_type;
+    EXCEPTION
+        WHEN NO_DATA_FOUND THEN
+            v_rate := 10.00; -- Fallback rate
+    END;
 
-    -- Update the transaction record with exit time and fee
-    UPDATE Transactions
-    SET ExitTime = v_exit_time,
-        TotalFee = v_fee
-    WHERE TransactionID = p_TransactionID;
-
-    -- Free the parking spot
-    UPDATE ParkingSpots
-    SET IsOccupied = 'N'
-    WHERE SpotID = v_spot_id;
-
+    v_fee := ROUND(v_hours * v_rate, 2);
     RETURN v_fee;
 
 EXCEPTION
     WHEN NO_DATA_FOUND THEN
-        RAISE_APPLICATION_ERROR(-20003, 'Active transaction not found or already closed.');
+        RAISE_APPLICATION_ERROR(-20004, 'Active ticket not found.');
+END;
+/
+
+CREATE OR REPLACE PROCEDURE PROC_ISSUE_TICKET (
+    p_vehicle_number IN VARCHAR2,
+    p_vehicle_type IN VARCHAR2,
+    p_gate_id IN VARCHAR2,
+    p_ticket_id OUT VARCHAR2,
+    p_slot_id OUT VARCHAR2
+) AS
+    v_vehicle_id VARCHAR2(20);
+    v_count NUMBER;
+BEGIN
+    -- 1. Find an available slot
+    p_slot_id := FUNC_FIND_AVAILABLE_SLOT(p_vehicle_type);
+
+    IF p_slot_id IS NULL THEN
+        RAISE_APPLICATION_ERROR(-20002, 'No available spots for the requested vehicle type.');
+    END IF;
+
+    -- 2. Find or Create Vehicle
+    SELECT COUNT(*) INTO v_count FROM VEHICLE WHERE vehicle_number = p_vehicle_number;
+
+    IF v_count = 0 THEN
+        -- Generate a simple random ID for the new vehicle
+        v_vehicle_id := 'V_' || DBMS_RANDOM.STRING('X', 8);
+        INSERT INTO VEHICLE (vehicle_id, vehicle_number, vehicle_type)
+        VALUES (v_vehicle_id, p_vehicle_number, p_vehicle_type);
+    ELSE
+        SELECT vehicle_id INTO v_vehicle_id
+        FROM VEHICLE
+        WHERE vehicle_number = p_vehicle_number
+        AND ROWNUM = 1;
+    END IF;
+
+    -- 3. Create the Ticket
+    p_ticket_id := 'T_' || DBMS_RANDOM.STRING('X', 8);
+
+    INSERT INTO TICKET (ticket_id, vehicle_id, slot_id, start_time, status)
+    VALUES (p_ticket_id, v_vehicle_id, p_slot_id, CURRENT_TIMESTAMP, 'ACTIVE');
+
+END;
+/
+
+CREATE OR REPLACE PROCEDURE PROC_PROCESS_CHECKOUT (
+    p_ticket_id IN VARCHAR2,
+    p_payment_mode IN VARCHAR2,
+    p_amount IN NUMBER
+) AS
+    v_payment_id VARCHAR2(20);
+BEGIN
+    v_payment_id := 'P_' || DBMS_RANDOM.STRING('X', 8);
+
+    -- 1. Record the Payment
+    INSERT INTO PAYMENT (payment_id, ticket_id, amount, payment_time, payment_mode)
+    VALUES (v_payment_id, p_ticket_id, p_amount, CURRENT_TIMESTAMP, p_payment_mode);
+
+    -- 2. Update the Ticket to CLOSED and set end time
+    UPDATE TICKET
+    SET end_time = CURRENT_TIMESTAMP,
+        status = 'CLOSED'
+    WHERE ticket_id = p_ticket_id;
+
 END;
 /

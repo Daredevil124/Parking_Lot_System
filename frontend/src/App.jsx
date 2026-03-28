@@ -31,13 +31,28 @@ export default function App() {
   const [error, setError] = useState(null);
   const [successMessage, setSuccessMessage] = useState(null);
 
+  // Setup Data State
+  const [setupInfo, setSetupInfo] = useState({
+    lots: [],
+    floors: [],
+    gates: [],
+    rates: [],
+  });
+
   // Forms State
+  // Check-In / Out State
   const [licensePlate, setLicensePlate] = useState("");
-  const [spotType, setSpotType] = useState("Regular");
+  const [spotType, setSpotType] = useState("CAR");
+  const [gateId, setGateId] = useState("");
   const [transactionId, setTransactionId] = useState("");
+  const [paymentMode, setPaymentMode] = useState("CREDIT_CARD");
+  const [calculatedFee, setCalculatedFee] = useState(null);
 
   // Admin & Search State
-  const [newSpotType, setNewSpotType] = useState("Regular");
+  const [newSpotType, setNewSpotType] = useState("CAR");
+  const [newFloorId, setNewFloorId] = useState("");
+  const [newFloorNumber, setNewFloorNumber] = useState("");
+  const [newGateType, setNewGateType] = useState("ENTRY");
   const [searchSpotId, setSearchSpotId] = useState("");
   const [searchSpotType, setSearchSpotType] = useState("");
   const [searchLicensePlate, setSearchLicensePlate] = useState("");
@@ -46,6 +61,30 @@ export default function App() {
 
   const fetchDashboardData = async (forceSpotsRefresh = false) => {
     try {
+      const setupRes = await fetch(`${API_BASE_URL}/setup-info`);
+      if (setupRes.ok) {
+        const setupData = await setupRes.json();
+        setSetupInfo(setupData);
+        if (setupData.gates && setupData.gates.length > 0) {
+          const entryGates = setupData.gates.filter(
+            (g) => g.gateType === "ENTRY" || g.gateType === "ENTRY/EXIT",
+          );
+          if (entryGates.length > 0) {
+            setGateId((prev) => prev || entryGates[0].gateId);
+          }
+        }
+        if (setupData.floors && setupData.floors.length > 0) {
+          setNewFloorId((prev) => prev || setupData.floors[0].floorId);
+        }
+      }
+
+      // Fetch pricing rates
+      const ratesRes = await fetch(`${API_BASE_URL}/rates`);
+      if (ratesRes.ok) {
+        const ratesData = await ratesRes.json();
+        setSetupInfo((prev) => ({ ...prev, rates: ratesData }));
+      }
+
       // Always fetch count
       const countRes = await fetch(`${API_BASE_URL}/spots/available`);
       if (countRes.ok) {
@@ -97,7 +136,7 @@ export default function App() {
       const response = await fetch(`${API_BASE_URL}/checkin`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ licensePlate, spotType }),
+        body: JSON.stringify({ licensePlate, spotType, gateId }),
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "Check-in failed.");
@@ -114,6 +153,26 @@ export default function App() {
     }
   };
 
+  const handleCalculateFee = async (e) => {
+    if (e) e.preventDefault();
+    if (!transactionId) return;
+    setIsLoading(true);
+    setCalculatedFee(null);
+    try {
+      const response = await fetch(
+        `${API_BASE_URL}/checkout/fee?transactionId=${encodeURIComponent(transactionId)}`,
+      );
+      const data = await response.json();
+      if (!response.ok)
+        throw new Error(data.error || "Failed to calculate fee.");
+      setCalculatedFee(data.fee);
+    } catch (err) {
+      showMessage(err.message, true);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   const handleCheckOut = async (e) => {
     e.preventDefault();
     setIsLoading(true);
@@ -121,13 +180,17 @@ export default function App() {
       const response = await fetch(`${API_BASE_URL}/checkout`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ transactionId: parseInt(transactionId) }),
+        body: JSON.stringify({
+          transactionId: transactionId,
+          paymentMode: paymentMode,
+        }),
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "Check-out failed.");
 
       showMessage(`Checkout Complete! Total Fee: $${data.fee.toFixed(2)}`);
       setTransactionId("");
+      setCalculatedFee(null);
       fetchDashboardData(true);
     } catch (err) {
       showMessage(err.message, true);
@@ -142,12 +205,60 @@ export default function App() {
       const response = await fetch(`${API_BASE_URL}/spots/add`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ count: 1, spotType: newSpotType }),
+        body: JSON.stringify({
+          count: 1,
+          spotType: newSpotType,
+          floorId: newFloorId,
+        }),
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "Failed to add spot.");
 
       showMessage(data.message || "Spot added successfully.");
+      fetchDashboardData(true);
+    } catch (err) {
+      showMessage(err.message, true);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleAddFloor = async () => {
+    setIsLoading(true);
+    try {
+      const response = await fetch(`${API_BASE_URL}/floors/add`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          lotId: "L1",
+          floorNumber: parseInt(newFloorNumber) || 1,
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Failed to add floor.");
+
+      showMessage(data.message || "Floor added successfully.");
+      setNewFloorNumber("");
+      fetchDashboardData(true);
+    } catch (err) {
+      showMessage(err.message, true);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleAddGate = async () => {
+    setIsLoading(true);
+    try {
+      const response = await fetch(`${API_BASE_URL}/gates/add`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ lotId: "L1", gateType: newGateType }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Failed to add gate.");
+
+      showMessage(data.message || "Gate added successfully.");
       fetchDashboardData(true);
     } catch (err) {
       showMessage(err.message, true);
@@ -168,6 +279,30 @@ export default function App() {
       if (!response.ok) throw new Error(data.error || "Failed to remove spot.");
 
       showMessage(data.message || "Spot removed successfully.");
+      fetchDashboardData(true);
+    } catch (err) {
+      showMessage(err.message, true);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleUpdateRate = async (vehicleType, newRate) => {
+    if (!newRate || isNaN(newRate) || newRate <= 0) {
+      showMessage("Please enter a valid rate greater than 0.", true);
+      return;
+    }
+    setIsLoading(true);
+    try {
+      const response = await fetch(`${API_BASE_URL}/rates`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ vehicleType, hourlyRate: parseFloat(newRate) }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Failed to update rate.");
+
+      showMessage(data.message || "Rate updated successfully.");
       fetchDashboardData(true);
     } catch (err) {
       showMessage(err.message, true);
@@ -234,9 +369,18 @@ export default function App() {
             <div className="bg-indigo-500 p-2 rounded-xl shadow-inner shadow-indigo-500/20">
               <Car className="w-6 h-6 text-white" />
             </div>
-            <h1 className="text-2xl font-bold tracking-tight">
-              Smart <span className="text-indigo-400 font-medium">Park</span>
-            </h1>
+            <div>
+              <h1 className="text-2xl font-bold tracking-tight">
+                {setupInfo.lots.length > 0
+                  ? setupInfo.lots[0].name
+                  : "Smart Park"}
+              </h1>
+              {setupInfo.lots.length > 0 && (
+                <p className="text-sm text-slate-500 font-medium">
+                  {setupInfo.lots[0].location}
+                </p>
+              )}
+            </div>
           </div>
           <button
             className="ml-auto lg:hidden text-slate-400 hover:text-white"
@@ -470,11 +614,35 @@ export default function App() {
                         onChange={(e) => setSpotType(e.target.value)}
                         className="block w-full px-4 py-3.5 bg-slate-50 border border-slate-200 rounded-xl text-base font-semibold text-slate-900 focus:ring-4 focus:ring-indigo-600/10 focus:border-indigo-600 focus:bg-white transition-all appearance-none cursor-pointer"
                       >
-                        <option value="Regular">Regular Parking</option>
-                        <option value="Compact">Compact Vehicle</option>
-                        <option value="Handicap">Handicap Accessible</option>
+                        <option value="CAR">Car</option>
+                        <option value="BIKE">Bike</option>
+                        <option value="TRUCK">Truck</option>
                       </select>
                     </div>
+
+                    <div className="space-y-2">
+                      <label className="text-sm font-bold text-slate-700 ml-1">
+                        Entry Gate
+                      </label>
+                      <select
+                        value={gateId}
+                        onChange={(e) => setGateId(e.target.value)}
+                        className="block w-full px-4 py-3.5 bg-slate-50 border border-slate-200 rounded-xl text-base font-semibold text-slate-900 focus:ring-4 focus:ring-indigo-600/10 focus:border-indigo-600 focus:bg-white transition-all appearance-none cursor-pointer"
+                      >
+                        {setupInfo.gates
+                          .filter(
+                            (g) =>
+                              g.gateType === "ENTRY" ||
+                              g.gateType === "ENTRY/EXIT",
+                          )
+                          .map((gate) => (
+                            <option key={gate.gateId} value={gate.gateId}>
+                              {gate.gateId} ({gate.gateType})
+                            </option>
+                          ))}
+                      </select>
+                    </div>
+
                     <div className="pt-4 mt-auto">
                       <button
                         type="submit"
@@ -516,32 +684,81 @@ export default function App() {
                       </label>
                       <div className="relative">
                         <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
-                          <Ticket className="h-5 w-5 text-slate-400" />
+                          <Ticket className="h-5 w-5 text-slate-400 z-10" />
                         </div>
-                        <input
-                          type="number"
+                        <select
                           value={transactionId}
-                          onChange={(e) => setTransactionId(e.target.value)}
+                          onChange={(e) => {
+                            setTransactionId(e.target.value);
+                            setCalculatedFee(null);
+                          }}
                           required
-                          min="1"
-                          className="block w-full pl-12 pr-4 py-3.5 bg-slate-50 border border-slate-200 rounded-xl text-base font-bold text-slate-900 focus:ring-4 focus:ring-emerald-600/10 focus:border-emerald-600 focus:bg-white transition-all placeholder:font-normal placeholder:text-slate-400"
-                          placeholder="Scan or enter ticket number"
-                        />
+                          className="block w-full pl-12 pr-4 py-3.5 bg-slate-50 border border-slate-200 rounded-xl text-base font-bold text-slate-900 focus:ring-4 focus:ring-emerald-600/10 focus:border-emerald-600 focus:bg-white transition-all appearance-none cursor-pointer"
+                        >
+                          <option value="" disabled>
+                            Select an active ticket
+                          </option>
+                          {spotsData
+                            .filter(
+                              (spot) =>
+                                spot.isOccupied === "Y" && spot.transactionId,
+                            )
+                            .map((spot) => (
+                              <option
+                                key={spot.transactionId}
+                                value={spot.transactionId}
+                              >
+                                {spot.transactionId} - Spot {spot.spotId} (
+                                {spot.licensePlate})
+                              </option>
+                            ))}
+                        </select>
                       </div>
+                    </div>
+
+                    <div className="space-y-2">
+                      <label className="text-sm font-bold text-slate-700 ml-1">
+                        Payment Mode
+                      </label>
+                      <select
+                        value={paymentMode}
+                        onChange={(e) => setPaymentMode(e.target.value)}
+                        className="block w-full px-4 py-3.5 bg-slate-50 border border-slate-200 rounded-xl text-base font-semibold text-slate-900 focus:ring-4 focus:ring-emerald-600/10 focus:border-emerald-600 focus:bg-white transition-all appearance-none cursor-pointer"
+                      >
+                        <option value="CREDIT_CARD">Credit Card</option>
+                        <option value="CASH">Cash</option>
+                        <option value="UPI">UPI / Digital</option>
+                      </select>
                       <p className="mt-3 text-sm text-slate-500 flex items-center gap-1.5 font-medium">
                         <ShieldCheck className="w-4 h-4 text-emerald-500" />{" "}
                         Secure transaction processing
                       </p>
                     </div>
-                    <div className="pt-4 mt-auto border-t border-slate-100">
+
+                    {calculatedFee !== null && (
+                      <div className="bg-emerald-50 text-emerald-700 p-4 rounded-xl font-bold text-center border border-emerald-200">
+                        Amount Due: ${calculatedFee.toFixed(2)}
+                      </div>
+                    )}
+
+                    <div className="pt-4 mt-auto border-t border-slate-100 flex gap-3">
+                      <button
+                        type="button"
+                        onClick={handleCalculateFee}
+                        disabled={isLoading || !transactionId}
+                        className="flex-1 py-4 px-4 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-base font-bold transition-all disabled:opacity-50 mt-2"
+                      >
+                        Calculate Fee
+                      </button>
                       <button
                         type="submit"
-                        disabled={isLoading || !transactionId}
-                        className="w-full flex items-center justify-center gap-2 py-4 px-4 bg-slate-900 hover:bg-slate-800 active:bg-black text-white rounded-xl text-base font-bold shadow-lg shadow-slate-900/20 transition-all disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-slate-900 disabled:shadow-none mt-2"
+                        disabled={
+                          isLoading || !transactionId || calculatedFee === null
+                        }
+                        className="flex-1 flex items-center justify-center gap-2 py-4 px-4 bg-slate-900 hover:bg-slate-800 active:bg-black text-white rounded-xl text-base font-bold shadow-lg shadow-slate-900/20 transition-all disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-slate-900 disabled:shadow-none mt-2"
                       >
-                        {isLoading
-                          ? "Processing..."
-                          : "Calculate Fee & Checkout"}
+                        Checkout
+                        <ArrowRight className="w-5 h-5" />
                       </button>
                     </div>
                   </form>
@@ -568,7 +785,7 @@ export default function App() {
                         <MapPin className="h-4 w-4 text-slate-400" />
                       </div>
                       <input
-                        type="number"
+                        type="text"
                         value={searchSpotId}
                         onChange={(e) => {
                           setSearchSpotId(e.target.value);
@@ -618,28 +835,138 @@ export default function App() {
                 </div>
 
                 {/* Admin Actions */}
-                <div className="w-full xl:w-auto border-t xl:border-t-0 xl:border-l border-slate-200 pt-6 xl:pt-0 xl:pl-6">
-                  <h3 className="text-sm font-bold text-slate-900 mb-3 uppercase tracking-wider">
-                    Lot Management
-                  </h3>
-                  <div className="flex items-center gap-3">
-                    <select
-                      value={newSpotType}
-                      onChange={(e) => setNewSpotType(e.target.value)}
-                      className="px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold text-slate-700 focus:ring-2 focus:ring-indigo-600/20 focus:border-indigo-600 focus:bg-white transition-colors cursor-pointer"
-                    >
-                      <option value="Regular">Regular</option>
-                      <option value="Compact">Compact</option>
-                      <option value="Handicap">Handicap</option>
-                    </select>
-                    <button
-                      onClick={handleAddSpot}
-                      disabled={isLoading}
-                      className="flex items-center justify-center gap-2 px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-sm font-bold shadow-sm shadow-indigo-600/20 transition-all disabled:opacity-50"
-                    >
-                      <Plus className="w-4 h-4" />
+                <div className="w-full xl:w-auto border-t xl:border-t-0 xl:border-l border-slate-200 pt-6 xl:pt-0 xl:pl-6 flex flex-col gap-5">
+                  <div>
+                    <h3 className="text-sm font-bold text-slate-900 mb-3 uppercase tracking-wider">
                       Add Spot
-                    </button>
+                    </h3>
+                    <div className="flex items-center gap-3">
+                      <select
+                        value={newSpotType}
+                        onChange={(e) => setNewSpotType(e.target.value)}
+                        className="px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold text-slate-700 focus:ring-2 focus:ring-indigo-600/20 focus:border-indigo-600 focus:bg-white transition-colors cursor-pointer"
+                      >
+                        <option value="CAR">Car</option>
+                        <option value="BIKE">Bike</option>
+                        <option value="TRUCK">Truck</option>
+                      </select>
+                      <select
+                        value={newFloorId}
+                        onChange={(e) => setNewFloorId(e.target.value)}
+                        className="px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold text-slate-700 focus:ring-2 focus:ring-indigo-600/20 focus:border-indigo-600 focus:bg-white transition-colors cursor-pointer"
+                      >
+                        {setupInfo.floors.map((floor) => (
+                          <option key={floor.floorId} value={floor.floorId}>
+                            Floor {floor.floorNumber}
+                          </option>
+                        ))}
+                      </select>
+                      <button
+                        onClick={handleAddSpot}
+                        disabled={isLoading || setupInfo.floors.length === 0}
+                        className="flex items-center justify-center gap-2 px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-sm font-bold shadow-sm shadow-indigo-600/20 transition-all disabled:opacity-50"
+                      >
+                        <Plus className="w-4 h-4" />
+                        Spot
+                      </button>
+                    </div>
+                  </div>
+                  <div className="flex flex-col sm:flex-row gap-5">
+                    <div>
+                      <h3 className="text-sm font-bold text-slate-900 mb-3 uppercase tracking-wider">
+                        Add Floor
+                      </h3>
+                      <div className="flex items-center gap-3">
+                        <input
+                          type="number"
+                          value={newFloorNumber}
+                          onChange={(e) => setNewFloorNumber(e.target.value)}
+                          placeholder="Floor #"
+                          className="w-24 px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold text-slate-700 focus:ring-2 focus:ring-indigo-600/20 focus:border-indigo-600 focus:bg-white transition-colors"
+                        />
+                        <button
+                          onClick={handleAddFloor}
+                          disabled={isLoading || !newFloorNumber}
+                          className="flex items-center justify-center gap-2 px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-sm font-bold shadow-sm shadow-indigo-600/20 transition-all disabled:opacity-50"
+                        >
+                          <Plus className="w-4 h-4" />
+                          Floor
+                        </button>
+                      </div>
+                    </div>
+                    <div>
+                      <h3 className="text-sm font-bold text-slate-900 mb-3 uppercase tracking-wider">
+                        Add Gate
+                      </h3>
+                      <div className="flex items-center gap-3">
+                        <select
+                          value={newGateType}
+                          onChange={(e) => setNewGateType(e.target.value)}
+                          className="px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold text-slate-700 focus:ring-2 focus:ring-indigo-600/20 focus:border-indigo-600 focus:bg-white transition-colors cursor-pointer"
+                        >
+                          <option value="ENTRY">Entry</option>
+                          <option value="EXIT">Exit</option>
+                          <option value="ENTRY/EXIT">Entry/Exit</option>
+                        </select>
+                        <button
+                          onClick={handleAddGate}
+                          disabled={isLoading}
+                          className="flex items-center justify-center gap-2 px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-sm font-bold shadow-sm shadow-indigo-600/20 transition-all disabled:opacity-50"
+                        >
+                          <Plus className="w-4 h-4" />
+                          Gate
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="border-t border-slate-200 mt-5 pt-5">
+                      <h3 className="text-sm font-bold text-slate-900 mb-3 uppercase tracking-wider">
+                        Pricing Rules (Hourly Rate)
+                      </h3>
+                      <div className="flex flex-col gap-3">
+                        {["CAR", "BIKE", "TRUCK"].map((vType) => {
+                          const currentRate =
+                            setupInfo.rates?.find(
+                              (r) => r.vehicleType === vType,
+                            )?.hourlyRate || 0;
+                          return (
+                            <div
+                              key={vType}
+                              className="flex items-center gap-3"
+                            >
+                              <span className="text-sm font-bold text-slate-700 w-16">
+                                {vType}
+                              </span>
+                              <div className="relative">
+                                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 font-bold">
+                                  $
+                                </span>
+                                <input
+                                  type="number"
+                                  step="0.50"
+                                  defaultValue={currentRate}
+                                  id={`rate-${vType}`}
+                                  className="w-24 pl-7 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold text-slate-700 focus:ring-2 focus:ring-indigo-600/20 focus:border-indigo-600 focus:bg-white transition-colors"
+                                />
+                              </div>
+                              <button
+                                onClick={() =>
+                                  handleUpdateRate(
+                                    vType,
+                                    document.getElementById(`rate-${vType}`)
+                                      .value,
+                                  )
+                                }
+                                disabled={isLoading}
+                                className="px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-bold transition-all disabled:opacity-50"
+                              >
+                                Update
+                              </button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
                   </div>
                 </div>
               </div>
