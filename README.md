@@ -4,7 +4,7 @@
 </div>
 
 ## 📖 Overview
-The **Parking Lot Management System** is a full-stack application designed to streamline the operations of a multi-floor parking facility. The system securely tracks incoming vehicles, allocates available parking slots based on vehicle type, manages time-based tickets, and processes payments upon exit. Check out the backend REST APIs and the intuitive user interface designed for operators and admins.
+The **Parking Lot Management System** is a full-stack application designed to streamline operations of a multi-floor parking facility. The system securely tracks incoming vehicles, allocates available parking slots based on vehicle type, manages time-based tickets, and processes payments upon exit. Check out the backend REST APIs and the intuitive user interface designed for operators and admins.
 
 ## ✨ Features
 - **Multi-Level Lot Management**: Organizes parking by floors, slots, and gates (Entry/Exit).
