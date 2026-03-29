@@ -81,8 +81,6 @@ Parking_Lot_System/
 - **Ticket ↔ Payment**: One-to-One
 - **ParkingLot ↔ Gate**: One-to-Many
 
-## 🤝 Contributing
-Contributions, issues, and feature requests are welcome! Feel free to check the [issues page](../../issues).
 
 ## 📝 License
 This project is open-source and available under the MIT License.
